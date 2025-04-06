@@ -2,6 +2,7 @@ import pandas as pd
 from scipy.sparse import csr_matrix
 import numpy as np
 import random
+import time 
 
 K = 5
 
@@ -36,6 +37,7 @@ artist_ids = np.array(list(artist_name_to_idx.keys()))
 
 
 if __name__ == '__main__':
+    start_time = time.time()
     for u in range(0, UAM.shape[0]):
         print("Seed user-id: " + str(user_ids[u]))
 
@@ -91,3 +93,8 @@ if __name__ == '__main__':
         print("Indices of " + str(len(random_elements)) + " recommended artists: ", random_elements)
         print("Recommended artist names:", [artist_ids[i] for i in random_elements])
         print('-' * 80)
+
+    end_time = time.time()
+    total_users = UAM.shape[0]
+    avg_time = (end_time - start_time) / total_users
+    print(f"Average time per user recommendation: {avg_time:.4f} seconds")
