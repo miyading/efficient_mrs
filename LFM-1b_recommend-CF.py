@@ -1,96 +1,69 @@
-# Implementation of a very simple and much to improve user-based collaborative filtering (CF) recommender.
-# Author: Markus Schedl
-
-# Load required modules
-import csv
+import pandas as pd
+from scipy.sparse import csr_matrix
 import numpy as np
-import h5py
-from scipy import sparse
+import random
+
+K = 5
+
+file_path = "lastfm-dataset-1K/userid-timestamp-artid-artname-traid-traname.tsv"
+# Load interaction log
+interactions = pd.read_csv(file_path, sep="\t", header=None,
+                           names=["user_id", "timestamp", "artist_id", "artist_name", "track_id", "track_name"], on_bad_lines='skip')
+
+# Count number of times each user listened to each artist
+playcounts = interactions.groupby(["user_id", "artist_name"]).size().reset_index(name="playcount")
+
+# Create mappings: user/artist to index
+user_id_to_idx = {user: idx for idx, user in enumerate(playcounts["user_id"].unique())}
+artist_name_to_idx = {artist: idx for idx, artist in enumerate(playcounts["artist_name"].unique())}
+
+# Map to index
+playcounts["user_idx"] = playcounts["user_id"].map(user_id_to_idx)
+playcounts["artist_idx"] = playcounts["artist_name"].map(artist_name_to_idx)
+
+# Build the sparse matrix (UAM)
+UAM = csr_matrix((playcounts["playcount"],
+                  (playcounts["user_idx"], playcounts["artist_idx"])),
+                 shape=(len(user_id_to_idx), len(artist_name_to_idx)))
+
+# normalize rows (for cosine similarity)
+from sklearn.preprocessing import normalize
+UAM = normalize(UAM, norm='l2', axis=1)
+
+# Create lists for reverse lookup
+user_ids = np.array(list(user_id_to_idx.keys()))
+artist_ids = np.array(list(artist_name_to_idx.keys()))
 
 
-UAM_MATLAB_FILE = 'LFM-1b_LEs.mat'         # Matlab .mat file where the listening events are stored
-ARTISTS_FILE = "LFM-1b_artists.txt"        # artist names for UAM
-USERS_FILE = "LFM-1b_users.txt"            # user names for UAM
-K = 3                                      # maximum number of seed's neighbors to select
-
-
-# Read the user-artist-matrix and corresponding artist and user indices from Matlab file
-def read_UAM(m_file):
-    mf = h5py.File(m_file, 'r')
-    user_ids = np.array(mf.get('idx_users')).astype(np.int64)
-    artist_ids = np.array(mf.get('idx_artists')).astype(np.int64)
-    # Load UAM
-    UAM = sparse.csr_matrix((mf['/LEs/']["data"],
-                             mf['/LEs/']["ir"],
-                             mf['/LEs/']["jc"])).transpose()    #.tocoo().transpose()
-    # user and artist indices to access UAM
-    UAM_user_idx = UAM.indices #UAM.row -> for COO matrix
-    UAM_artist_idx = UAM.indptr #UAM.col -> for COO matrix
-    return UAM, UAM_user_idx, UAM_artist_idx, user_ids, artist_ids
-
-
-# Function to read metadata (users or artists)
-def read_from_file(filename, col):                  # col = column to read from file
-    data = []
-    with open(filename, 'r') as f:                  # open file for reading
-        reader = csv.reader(f, delimiter='\t')      # create reader
-        headers = reader.next()                     # skip header
-        for row in reader:
-            item = row[col]
-            data.append(item)
-    f.close()
-    return data
-
-
-# Main program
 if __name__ == '__main__':
-    # Initialize variables
-    artists = []            # artists
-    users = []              # users
-
-    # Read UAM
-    UAM, UAM_user_idx, UAM_artist_idx, user_ids, artist_ids = read_UAM(UAM_MATLAB_FILE)
-    print 'Users: ', len(user_ids)
-    print 'Artists: ', len(artist_ids)
-
-    # Load metadata from provided files into lists
-    artists = read_from_file(ARTISTS_FILE, 1)
-    users = read_from_file(USERS_FILE, 0)
-
-    # For all users
     for u in range(0, UAM.shape[0]):
-        print "Seed user-id: " + str(users[u])
+        print("Seed user-id: " + str(user_ids[u]))
 
-        # get (normalized) playcount vector for current user u
+        # Get normalized playcount vector for current user
         pc_vec = UAM.getrow(u)
 
-        # Compute similarities as dot product between playcount vector of user and all users via UAM (assuming that UAM is already normalized)
-#        print uU_sim_users
+        # Compute cosine similarity between this user and all users
         uU_sim = pc_vec.dot(UAM.transpose()).tocoo()
         uU_user_idx = uU_sim.col
         uU_data = uU_sim.data
 
-        #
-        # Determine nearest neighbors to seed based on uUM
-        #
-
-        # Find the occurrence of the seed user in uU_data cols
-        # and set to 0 so that it is not selected as its own NN
-        occ_user_idx = (uU_user_idx == u)
-        uU_data[occ_user_idx] = 0
+        # Remove self-similarity
+        uU_data[uU_user_idx == u] = 0
 
         # Eliminate zeros
         uU_sim.data = uU_data
         uU_sim = uU_sim.tocsr()
         uU_sim.eliminate_zeros()
         uU_sim = uU_sim.tocoo()
+
+        # Re-assign user indices and scores
         uU_user_idx = uU_sim.col
         uU_data = uU_sim.data
 
-        # Sort users according to the similarity (uU_data)
+        # Sort by similarity score
         sort_index = np.argsort(uU_data)
 
-        # Select the K nearest neighbors among all users
+        # Select top-K nearest neighbors
         # Note that uU_user_idx indeed provides the indices for users in UAM
         recommended_user_idx = uU_user_idx[sort_index[-K:]]
         # Get user_ids corresponding to nearest neighbors
@@ -98,20 +71,23 @@ if __name__ == '__main__':
         # Get similarity score for nearest neighbors
         recommended_user_scores = uU_data[sort_index[-K:]]
 
-        print "Nearest K=" + str(K) + " neighbors\' user-ids: ", recommended_user_ids.flatten()
-#        print 'Scores/similarities:  ' + str(recommended_user_scores)
-#        print 'Index in UAM for recommended user-ids: ' + str(recommended_user_idx)
+        print("Nearest K=" + str(K) + " neighbors' user-ids: ", recommended_user_ids.flatten())
 
-        #
-        # Determine set of recommended artists
-        #
+        # Get all artists these similar users have listened to
         recommended_artists_idx = []
         for u_idx in recommended_user_idx:
             recommended_artists_idx.extend(list(UAM.getrow(u_idx).indices))
 
-        # Convert to set to remove duplicates and sort it
+        # Remove duplicates and sort
         recommended_artists_idx = sorted(set(recommended_artists_idx))
+
         # Remove artists already known to seed user
         recommended_artists_idx = np.setdiff1d(recommended_artists_idx, pc_vec.indices)
 
-        print "Indices of " + str(len(recommended_artists_idx)) + " recommended artists: ", recommended_artists_idx
+        # Narrow down to random 5 artist out of all artists that similar users listen to for illustration purpose
+        random_indices = random.sample(range(len(recommended_artists_idx)), 5)
+        random_elements = [recommended_artists_idx[i] for i in random_indices]
+
+        print("Indices of " + str(len(random_elements)) + " recommended artists: ", random_elements)
+        print("Recommended artist names:", [artist_ids[i] for i in random_elements])
+        print('-' * 80)
