@@ -1,5 +1,5 @@
 # updated script using FAISS for user-user similarity instead of computing dense dot products with sparse matrices
-# uses FAISS.IndexFlatIP to compute cosine sim; index.search() for fast ANN
+# uses FAISS.IndexFlatIP to compute cosine sim; index.search() for exact neighest neighbour search
 import pandas as pd
 import numpy as np
 import random
